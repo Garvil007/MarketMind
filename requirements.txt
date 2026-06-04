@@ -6,6 +6,7 @@ langchain-anthropic
 langchain-mcp-adapters
 langsmith
 yfinance
+TA-Lib
 vaderSentiment
 pandas
 numpy

@@ -10,6 +10,8 @@ import pandas as pd
 import yfinance as yf
 from fastmcp import FastMCP
 
+from marketmind import scanner
+
 mcp = FastMCP("market-data")
 
 
@@ -115,6 +117,31 @@ def get_technicals(ticker: str) -> dict:
         }
     except Exception as exc:  # noqa: BLE001 - surface as data, never raise to the agent
         return {"error": f"get_technicals failed for '{ticker}': {exc}"}
+
+
+@mcp.tool
+def scan_signals(ticker: str) -> dict:
+    """Run a personal RS-high + buy-signal momentum scan on a US stock ticker.
+
+    Fetches ~2y of daily data for the ticker and the S&P 500 benchmark, then:
+      - rs_high: True if relative strength vs the S&P 500 just made a new
+        ~6-month high (123-bar rolling max).
+      - buy_signal: True only if ALL six conditions hold: +DI(5) rising >=10,
+        last-bar dollar volume above threshold, EMA10>EMA20>EMA50, weekly
+        RSI(14) >= 59, 50-day SMA rising over 5 bars, and last volume above its
+        20-day SMA.
+
+    Args:
+        ticker: US stock symbol, e.g. "NVDA".
+
+    Returns:
+        {"symbol": str, "market": "usa",
+         "rs_high": bool, "buy_signal": bool,
+         "details": {"symbol", "price", "change_pct", "volume", "avg_volume",
+                     "volume_ratio", "rs_value"},
+         "error": str | null}
+    """
+    return scanner.scan_signals(ticker)
 
 
 if __name__ == "__main__":

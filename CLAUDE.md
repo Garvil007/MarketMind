@@ -90,6 +90,15 @@ get_technicals(ticker: str) -> dict
     -> {"ticker","rsi_14","sma_50","sma_200","last_close","above_sma_50","pct_from_sma_50"}
 ```
 
+Extension (personal scanner, USA only, TA-Lib backed — see `src/marketmind/scanner.py`):
+```
+scan_signals(ticker: str) -> dict     # RS-high + 6-condition buy signal vs S&P 500
+    -> {"symbol","market":"usa","rs_high","buy_signal",
+        "details": {"symbol","price","change_pct","volume","avg_volume",
+                    "volume_ratio","rs_value"},
+        "error"}
+```
+
 ### News MCP — FastMCP, Streamable HTTP, port 8002, `/mcp`
 ```
 get_recent_news(ticker: str, limit: int = 12) -> dict
