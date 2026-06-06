@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- LLM ---
-ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY")
-AGENT_MODEL: str = os.getenv("AGENT_MODEL", "claude-sonnet-4-6")
+# --- LLM (Groq, free Llama models) ---
+GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
+AGENT_MODEL: str = os.getenv("AGENT_MODEL", "llama-3.3-70b-versatile")
 
 # --- LangSmith tracing ---
 LANGSMITH_API_KEY: str | None = os.getenv("LANGSMITH_API_KEY")

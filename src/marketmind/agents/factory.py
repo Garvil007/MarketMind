@@ -6,16 +6,17 @@ Importing this module also imports config, which activates LangSmith tracing.
 """
 from __future__ import annotations
 
-from langchain_anthropic import ChatAnthropic
+from langchain_groq import ChatGroq
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
 
 from marketmind import config  # noqa: F401 - side effect: sets LangSmith env vars
 
 # One shared model instance for all agents; deterministic output for parsable JSON.
-MODEL = ChatAnthropic(
+# Groq serves Llama models (free tier) with an OpenAI-compatible tool-calling API.
+MODEL = ChatGroq(
     model=config.AGENT_MODEL,
-    api_key=config.ANTHROPIC_API_KEY,
+    api_key=config.GROQ_API_KEY,
     temperature=0,
 )
 

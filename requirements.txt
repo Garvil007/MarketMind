@@ -2,7 +2,7 @@ fastmcp
 mcp
 langgraph
 langchain
-langchain-anthropic
+langchain-groq
 langchain-mcp-adapters
 langsmith
 yfinance

@@ -23,8 +23,8 @@ emits a cited markdown report.
 ```
 
 - **Transport:** every server is FastMCP over Streamable HTTP at path `/mcp`.
-- **Agents:** `ChatAnthropic` (model from `AGENT_MODEL`) + MCP tools loaded
-  per-agent via `langchain-mcp-adapters`. Each agent sees ONLY its server's tools.
+- **Agents:** `ChatGroq` (Llama, model from `AGENT_MODEL`, free tier) + MCP tools
+  loaded per-agent via `langchain-mcp-adapters`. Each agent sees ONLY its server's tools.
 - **Router:** after the quant node, `run_sentiment` flag decides whether the
   sentiment branch runs (e.g. skip on a clear SELL).
 - **Tracing:** LangSmith, project `marketmind`.
@@ -44,7 +44,7 @@ OUT of scope — do NOT build:
 - Order execution / brokerage integration. Reports are advisory only.
 - Real-time streaming, websockets, intraday tick data.
 - Multiple tickers / basket optimization per query.
-- Any LLM provider other than Anthropic.
+- LLM provider is Groq (Llama). Single provider — no multi-provider abstraction.
 - Containerization, cloud deploy, CI beyond local.
 
 ---
