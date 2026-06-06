@@ -1,0 +1,15 @@
+fastmcp
+mcp
+langgraph
+langchain
+langchain-anthropic
+langchain-mcp-adapters
+langsmith
+yfinance
+TA-Lib
+vaderSentiment
+pandas
+numpy
+python-dotenv
+streamlit
+pydantic

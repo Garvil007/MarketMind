@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: marketmind
+Version: 0.1.0
+Summary: Multi-agent financial research MVP — three MCP servers + LangGraph orchestrator.
+Requires-Python: >=3.10
+Requires-Dist: fastmcp
+Requires-Dist: mcp
+Requires-Dist: langgraph
+Requires-Dist: langchain
+Requires-Dist: langchain-anthropic
+Requires-Dist: langchain-mcp-adapters
+Requires-Dist: langsmith
+Requires-Dist: yfinance
+Requires-Dist: TA-Lib
+Requires-Dist: vaderSentiment
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: python-dotenv
+Requires-Dist: streamlit
+Requires-Dist: pydantic
