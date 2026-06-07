@@ -1,4 +1,4 @@
-"""Agent factory: ChatAnthropic + scoped MCP tool loading.
+"""Agent factory: ChatGroq + scoped MCP tool loading.
 
 The scoping rule: an agent connects to exactly ONE MCP server and receives only
 that server's tools. get_scoped_tools is the single choke point that enforces it.
