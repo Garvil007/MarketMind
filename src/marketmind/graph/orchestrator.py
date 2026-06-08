@@ -59,3 +59,23 @@ async def run_analysis(query: str, thread_id: str = "demo") -> MarketMindState:
     graph = build_graph().compile(checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": thread_id}}
     return await graph.ainvoke({"query": query}, config=config)
+
+
+async def run_analysis_stream(query: str, thread_id: str = "demo"):
+    """Stream the pipeline, yielding (node_name, accumulated_state) as each node finishes.
+
+    Uses LangGraph's "updates" stream mode: each chunk is {node_name: partial_update}.
+    We merge updates into a running state and yield the snapshot so far, so a UI can
+    light up each agent card the moment its node completes.
+
+    Yields:
+        tuple[str, MarketMindState]: the node that just finished and the state after it.
+    """
+    graph = build_graph().compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": thread_id}}
+    state: dict = {"query": query}
+    async for chunk in graph.astream({"query": query}, config=config, stream_mode="updates"):
+        for node_name, update in chunk.items():
+            if update:
+                state.update(update)
+            yield node_name, dict(state)
