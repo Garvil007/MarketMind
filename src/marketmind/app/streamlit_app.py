@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import streamlit as st
 
@@ -24,9 +26,21 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from marketmind import config  # noqa: E402
-from marketmind.graph.orchestrator import run_analysis_stream  # noqa: E402
+
+st.set_page_config(page_title="MarketMind", layout="wide")
+
+# Importing the orchestrator pulls in agents.factory, which fails fast if the
+# Groq key is missing. Surface that as a clean message, not a stack trace.
+try:
+    from marketmind.graph.orchestrator import run_analysis_stream  # noqa: E402
+except config.ConfigError as e:
+    st.error(f"⚙️ Configuration error: {e}")
+    st.stop()
 
 DEFAULT_QUERY = "Should I buy NVDA this week?"
+
+# Human-readable server names for error messages, keyed by config.MCP_URLS key.
+SERVER_LABELS = {"market_data": "Market Data", "news": "News", "portfolio": "Portfolio"}
 
 # Node -> card title. ingest has no card (it only sets ticker/notional).
 CARDS = ["quant", "sentiment", "risk", "report"]
@@ -109,6 +123,27 @@ def _highlight_citations(md: str) -> str:
 
 # --- streaming driver -------------------------------------------------------
 
+def _down_servers() -> list[tuple[str, int]]:
+    """Return (server_key, port) for any MCP server not accepting TCP connections."""
+    down = []
+    for key, url in config.MCP_URLS.items():
+        parsed = urlparse(url)
+        host, port = parsed.hostname or "localhost", parsed.port or 80
+        with socket.socket() as s:
+            s.settimeout(0.5)
+            if s.connect_ex((host, port)) != 0:
+                down.append((key, port))
+    return down
+
+
+def _unreachable_messages(down: list[tuple[str, int]]) -> list[str]:
+    """Friendly 'run `make servers`' message per unreachable server."""
+    return [
+        f"{SERVER_LABELS.get(key, key)} MCP not reachable on :{port} — run `make servers`"
+        for key, port in down
+    ]
+
+
 def _iter_stream(query: str):
     """Drive the async run_analysis_stream generator from sync Streamlit code."""
     loop = asyncio.new_event_loop()
@@ -165,9 +200,9 @@ def _run_pipeline(query: str, slots: dict) -> tuple[dict, float]:
 
 # --- page -------------------------------------------------------------------
 
-st.set_page_config(page_title="MarketMind", layout="wide")
 st.session_state.setdefault("running", False)
 st.session_state.setdefault("result", None)
+st.session_state.setdefault("server_error", None)
 
 st.markdown("## MarketMind")
 st.caption("Multi-agent investment research")
@@ -224,16 +259,26 @@ def _render_report(state: dict, latency: float) -> None:
 if analyze and not st.session_state.running:
     st.session_state.running = True
     st.session_state.pending_query = query
+    st.session_state.server_error = None
     st.rerun()
 
 if st.session_state.running:
+    # Preflight: don't start the graph if a server is down — show a clear fix.
+    down = _down_servers()
+    if down:
+        st.session_state.server_error = _unreachable_messages(down)
+        st.session_state.running = False
+        st.rerun()
+
     state, latency = _run_pipeline(st.session_state.pending_query, slots)
     errors = state.get("errors", [])
     _render_report(state, latency)
     if errors:
-        st.warning("Node errors:\n" + "\n".join(f"- {e}" for e in errors))
+        st.warning("Some nodes reported errors:\n" + "\n".join(f"- {e}" for e in errors))
     st.session_state.result = {"state": state, "latency": latency}
     st.session_state.running = False
     st.rerun()
 else:
+    for msg in st.session_state.server_error or []:
+        st.error(msg)
     _render_static(st.session_state.result)

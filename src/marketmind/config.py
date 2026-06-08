@@ -14,6 +14,24 @@ load_dotenv()
 GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
 AGENT_MODEL: str = os.getenv("AGENT_MODEL", "llama-3.3-70b-versatile")
 
+
+class ConfigError(RuntimeError):
+    """Raised when required configuration (e.g. the LLM key) is missing."""
+
+
+def require_groq_key() -> str:
+    """Return the Groq API key, or fail fast with a clear, actionable message.
+
+    Called at the LLM entry point (agents.factory) so a fresh checkout without a
+    key gets a one-line fix instead of a deep provider stack trace.
+    """
+    if not GROQ_API_KEY:
+        raise ConfigError(
+            "GROQ_API_KEY is not set. Copy .env.example to .env and add your free "
+            "Groq key (create one at https://console.groq.com/keys)."
+        )
+    return GROQ_API_KEY
+
 # --- LangSmith tracing ---
 LANGSMITH_API_KEY: str | None = os.getenv("LANGSMITH_API_KEY")
 LANGSMITH_TRACING: bool = os.getenv("LANGSMITH_TRACING", "true").lower() == "true"

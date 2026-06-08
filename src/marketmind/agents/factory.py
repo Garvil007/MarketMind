@@ -12,6 +12,9 @@ from langgraph.prebuilt import create_react_agent
 
 from marketmind import config  # noqa: F401 - side effect: sets LangSmith env vars
 
+# Fail fast with a clear message if the key is missing, before constructing the client.
+config.require_groq_key()
+
 # One shared model instance for all agents; deterministic output for parsable JSON.
 # Groq serves Llama models (free tier) with an OpenAI-compatible tool-calling API.
 MODEL = ChatGroq(
