@@ -76,7 +76,7 @@ def get_holdings(account_id: str = "default") -> dict:
 
 
 @mcp.tool
-def assess_position_risk(ticker: str, proposed_notional: float,
+def assess_position_risk(ticker: str, proposed_notional: float | str,
                          account_id: str = "default") -> dict:
     """Assess concentration risk of adding a dollar amount to a ticker.
 
@@ -98,6 +98,11 @@ def assess_position_risk(ticker: str, proposed_notional: float,
          "note": str}                      # one-sentence summary
     """
     ticker = ticker.upper()
+    # Some LLMs emit numeric tool args as strings ("10000"); coerce defensively.
+    try:
+        proposed_notional = float(proposed_notional)
+    except (TypeError, ValueError):
+        return {"error": f"proposed_notional must be a number, got {proposed_notional!r}"}
     rows = _priced_holdings(account_id)
     total_value = sum(r["market_value"] for r in rows)
 
