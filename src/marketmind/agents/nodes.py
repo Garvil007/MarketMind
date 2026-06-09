@@ -15,6 +15,7 @@ import functools
 import json
 import re
 
+from marketmind import config
 from marketmind.agents.factory import MODEL, build_agent
 from marketmind.agents.prompts import (
     QUANT_SYSTEM_PROMPT,
@@ -26,7 +27,11 @@ from marketmind.state import MarketMindState
 
 # Confidence below this makes the quant node request the sentiment branch.
 _SENTIMENT_CONFIDENCE_GATE = 0.6
+# Confidence below this triggers in-process A2A delegation (only when ENABLE_A2A).
+_A2A_CONFIDENCE_GATE = 0.4
 _DEFAULT_NOTIONAL = 10000.0
+
+_SENTIMENT_KEYS = {"label", "score", "headline_count", "summary"}
 
 # Common all-caps tokens that are NOT tickers, so ingest doesn't mistake them.
 _NOT_TICKERS = {"I", "A", "BUY", "SELL", "HOLD", "USD", "US", "USA", "THE", "DD", "CEO", "ETF", "IPO"}
@@ -40,11 +45,17 @@ def _section(label: str, value: object, absent: str) -> str:
 
 def _build_user_message(state: MarketMindState) -> str:
     """Flatten the relevant state into the human message for the report LLM."""
+    parts = [
+        f"User query: {state.get('query', '(none)')}",
+        f"Ticker: {state.get('ticker', '(unknown)')}",
+        f"Proposed notional: {state.get('proposed_notional', 10000)}",
+    ]
+    # Only present (and only when A2A fired) — keeps the off-path message identical.
+    if state.get("delegated_to"):
+        parts.append(f"Note: the Quant agent delegated directly to the {state['delegated_to']} agent (A2A).")
     return "\n\n".join(
-        [
-            f"User query: {state.get('query', '(none)')}",
-            f"Ticker: {state.get('ticker', '(unknown)')}",
-            f"Proposed notional: {state.get('proposed_notional', 10000)}",
+        parts
+        + [
             _section("Quant agent output", state.get("quant"), "(absent)"),
             _section(
                 "Sentiment agent output",
@@ -149,7 +160,13 @@ async def ingest(state: MarketMindState) -> dict:
 
 @_safe("quant")
 async def quant_node(state: MarketMindState) -> dict:
-    """Run the Quant agent; set state['quant'] and the run_sentiment router flag."""
+    """Run the Quant agent; set state['quant'] and the run_sentiment router flag.
+
+    When ENABLE_A2A is on AND confidence is very low (< 0.4), the Quant node makes
+    a lightweight in-process A2A call to the Sentiment agent directly — distinct
+    from the graph's normal routing — and tags state with delegated_to="sentiment".
+    With the flag off this path is dead, so the baseline is byte-for-byte unchanged.
+    """
     ticker = state["ticker"]
     quant = await _run_scoped_agent(
         "market_data",
@@ -157,8 +174,23 @@ async def quant_node(state: MarketMindState) -> dict:
         f"Analyze {ticker}.",
         {"signal", "confidence", "rsi_14", "sma_50", "last_close", "above_sma_50", "rationale"},
     )
-    run_sentiment = float(quant["confidence"]) < _SENTIMENT_CONFIDENCE_GATE
-    return {"quant": quant, "run_sentiment": run_sentiment}
+    confidence = float(quant["confidence"])
+    update: dict = {"quant": quant, "run_sentiment": confidence < _SENTIMENT_CONFIDENCE_GATE}
+
+    if config.ENABLE_A2A and confidence < _A2A_CONFIDENCE_GATE:
+        # A2A: Quant asks Sentiment directly (horizontal), bypassing graph routing.
+        sentiment = await _run_scoped_agent(
+            "news",
+            SENTIMENT_SYSTEM_PROMPT,
+            f"Assess recent news sentiment for {ticker}.",
+            _SENTIMENT_KEYS,
+        )
+        update["sentiment"] = sentiment
+        update["delegated_to"] = "sentiment"
+        # The read is already satisfied; skip the graph's sentiment node.
+        update["run_sentiment"] = False
+
+    return update
 
 
 @_safe("sentiment")
@@ -169,7 +201,7 @@ async def sentiment_node(state: MarketMindState) -> dict:
         "news",
         SENTIMENT_SYSTEM_PROMPT,
         f"Assess recent news sentiment for {ticker}.",
-        {"label", "score", "headline_count", "summary"},
+        _SENTIMENT_KEYS,
     )
     return {"sentiment": sentiment}
 

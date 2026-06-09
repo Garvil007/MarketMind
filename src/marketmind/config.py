@@ -32,6 +32,12 @@ def require_groq_key() -> str:
         )
     return GROQ_API_KEY
 
+# --- Feature flags ---
+# A2A (agent-to-agent) delegation: when on, a very-low-confidence Quant call asks
+# the Sentiment agent directly, in-process, instead of relying on graph routing.
+# Off by default — the LangGraph baseline is byte-for-byte unchanged.
+ENABLE_A2A: bool = os.getenv("ENABLE_A2A", "false").lower() == "true"
+
 # --- LangSmith tracing ---
 LANGSMITH_API_KEY: str | None = os.getenv("LANGSMITH_API_KEY")
 LANGSMITH_TRACING: bool = os.getenv("LANGSMITH_TRACING", "true").lower() == "true"

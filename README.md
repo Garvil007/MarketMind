@@ -57,6 +57,14 @@ Each specialist agent connects to **exactly one** MCP server. The Report Writer 
 
 ---
 
+## MCP vs A2A
+
+**MCP is the vertical layer connecting agents to tools; A2A is the horizontal layer connecting agents to each other.** The baseline pipeline is pure MCP + graph routing. A single, flag-gated **A2A** path demonstrates the horizontal layer: set `ENABLE_A2A=true` and when the Quant agent returns *very low* confidence (`< 0.4`), it calls the Sentiment agent **directly, in-process** — attaching `delegated_to: "sentiment"` — instead of waiting for the graph to route there. With the flag off (default) this code is dead and the LangGraph baseline is byte-for-byte identical.
+
+```bash
+ENABLE_A2A=true make pipeline   # very-low-confidence runs show the delegation note
+```
+
 ## Agents
 
 | Agent | MCP server | Tools | Output |
@@ -100,6 +108,7 @@ Then open the Streamlit URL and click **Analyze**. Other targets: `make servers`
 |-----|---------|
 | `GROQ_API_KEY` | **Required.** Free Llama inference — get one at [console.groq.com/keys](https://console.groq.com/keys) |
 | `AGENT_MODEL` | Groq model id (default `llama-3.3-70b-versatile`) |
+| `ENABLE_A2A` | Enable the in-process Quant→Sentiment delegation path (default `false`) |
 | `LANGSMITH_API_KEY` / `LANGSMITH_TRACING` / `LANGSMITH_PROJECT` | Optional tracing (project defaults to `marketmind`) |
 | `MARKET_DATA_MCP_URL` / `NEWS_MCP_URL` / `PORTFOLIO_MCP_URL` | Server URLs (default `localhost:8001-8003/mcp`) |
 
@@ -109,7 +118,7 @@ Then open the Streamlit URL and click **Analyze**. Other targets: `make servers`
 
 Deliberately deferred to keep the MVP a single-machine `make demo`. Each is a known seam, not a missing piece:
 
-- **A2A delegation** — agent-to-agent calls instead of a fixed graph, for dynamic routing.
+- **A2A delegation** — generalize the one flag-gated delegation path (`ENABLE_A2A`) into full agent-to-agent routing instead of a fixed graph.
 - **Redis checkpoints** — durable, multi-process graph state in place of in-memory `MemorySaver`.
 - **Pinecone semantic news** — vector recall over a news corpus, replacing the current headline-only VADER pass.
 - **Kafka price streaming** — real-time tick ingestion (the personal scanner already had a Kafka path, stripped for the MVP).

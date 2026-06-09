@@ -31,6 +31,8 @@ async def main() -> None:
     print(f"Ticker: {state.get('ticker')}   Notional: {state.get('proposed_notional')}")
     print(f"Quant signal: {(state.get('quant') or {}).get('signal')}   "
           f"run_sentiment: {state.get('run_sentiment')}")
+    if state.get("delegated_to"):
+        print(f"A2A: Quant delegated_to -> {state['delegated_to']}")
 
     print("\n===== REPORT =====\n")
     print(state.get("report_markdown", "(no report produced)"))

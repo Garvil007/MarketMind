@@ -38,6 +38,7 @@ class MarketMindState(TypedDict, total=False):
     sentiment: SentimentResult
     risk: RiskResult
     run_sentiment: bool      # router flag set after the quant node
+    delegated_to: str        # set when an agent delegates in-process via A2A (e.g. "sentiment")
     report_markdown: str     # final cited report
     citations: list[dict]    # [{"claim": str, "agent": "quant"|"sentiment"|"risk"}]
     errors: list[str]
