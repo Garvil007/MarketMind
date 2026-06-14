@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import talib
 import yfinance as yf
 from fastmcp import FastMCP
 
-from marketmind import scanner
+from marketmind.scanner import (
+    INDEX_SYMBOL_USA,
+    _safe_array,
+    scan_with_data,
+)
 
 mcp = FastMCP("market-data")
 
@@ -18,18 +23,6 @@ mcp = FastMCP("market-data")
 def _history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     """Fetch a yfinance OHLCV DataFrame. Empty frame means unknown ticker."""
     return yf.Ticker(ticker).history(period=period, interval=interval)
-
-
-def _rsi(close: pd.Series, window: int = 14) -> float:
-    """Wilder-style RSI over `close`. Returns the most recent value."""
-    delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
-    avg_gain = gain.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    return float(rsi.iloc[-1])
 
 
 @mcp.tool
@@ -71,9 +64,12 @@ def get_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d") -> dict:
 
 @mcp.tool
 def get_technicals(ticker: str) -> dict:
-    """Compute trend/momentum technicals for a stock ticker.
+    """Compute trend/momentum technicals for a stock ticker using TA-Lib.
 
-    Uses ~1 year of daily closes so the 200-day SMA is well defined.
+    Fetches 2y of daily data (same window as the scanner) so SMA-200, RS, and
+    the six-condition buy signal are all well-defined. Embeds scanner outputs
+    (rs_high, buy_signal) so the Quant agent needs only one tool call for the
+    full picture.
 
     Args:
         ticker: Stock symbol, e.g. "NVDA" (US equities).
@@ -81,39 +77,63 @@ def get_technicals(ticker: str) -> dict:
     Returns:
         On success:
             {"ticker": str,
-             "rsi_14": float,          # 14-period RSI, 0-100
-             "sma_50": float,          # 50-day simple moving average
-             "sma_200": float,         # 200-day simple moving average (null if too few rows)
+             "rsi_14": float,          # TA-Lib RSI(14) on daily closes
+             "sma_50": float,          # TA-Lib SMA(50)
+             "sma_200": float | null,  # TA-Lib SMA(200), null if < 200 rows
+             "ema_10": float,          # TA-Lib EMA(10)
+             "ema_20": float,          # TA-Lib EMA(20)
+             "ema_50": float,          # TA-Lib EMA(50)
              "last_close": float,
-             "above_sma_50": bool,     # last_close > sma_50
-             "pct_from_sma_50": float} # percent distance of last_close from sma_50
+             "above_sma_50": bool,
+             "pct_from_sma_50": float,
+             "rs_high": bool,          # RS vs S&P 500 at a ~6-month new high
+             "buy_signal": bool,       # all six scanner conditions true
+             "rs_value": float}        # raw RS score vs S&P 500
         On failure:
             {"error": str}
     """
     try:
-        df = _history(ticker, period="1y", interval="1d")
-        if df is None or df.empty:
-            return {"error": f"No data for ticker '{ticker}'."}
-        close = df["Close"].dropna()
-        if len(close) < 50:
-            return {"error": f"Not enough history for '{ticker}' to compute technicals ({len(close)} rows)."}
+        data_2y = yf.Ticker(ticker).history(period="2y", interval="1d")
+        idx_2y = yf.Ticker(INDEX_SYMBOL_USA).history(period="2y", interval="1d")
 
-        last_close = float(close.iloc[-1])
-        sma_50 = float(close.rolling(window=50).mean().iloc[-1])
-        sma_200_raw = close.rolling(window=200).mean().iloc[-1] if len(close) >= 200 else np.nan
-        sma_200 = None if pd.isna(sma_200_raw) else round(float(sma_200_raw), 2)
-        rsi_14 = _rsi(close, 14)
+        if data_2y is None or data_2y.empty:
+            return {"error": f"No data for ticker '{ticker}'."}
+
+        close_series = data_2y["Close"].dropna()
+        if len(close_series) < 50:
+            return {"error": f"Not enough history for '{ticker}' ({len(close_series)} rows)."}
+
+        close = _safe_array(close_series)
+
+        rsi_14_arr = talib.RSI(close, timeperiod=14)
+        sma_50_arr = talib.SMA(close, timeperiod=50)
+        sma_200_arr = talib.SMA(close, timeperiod=200)
+        ema_10_arr = talib.EMA(close, timeperiod=10)
+        ema_20_arr = talib.EMA(close, timeperiod=20)
+        ema_50_arr = talib.EMA(close, timeperiod=50)
+
+        last_close = round(float(close[-1]), 2)
+        sma_50 = round(float(sma_50_arr[-1]), 2)
+        sma_200 = None if np.isnan(sma_200_arr[-1]) else round(float(sma_200_arr[-1]), 2)
         above_sma_50 = last_close > sma_50
-        pct_from_sma_50 = (last_close - sma_50) / sma_50 * 100.0 if sma_50 else 0.0
+        pct_from_sma_50 = round((last_close - sma_50) / sma_50 * 100.0, 2) if sma_50 else 0.0
+
+        scan = scan_with_data(ticker.upper(), "usa", data_2y, idx_2y)
 
         return {
             "ticker": ticker.upper(),
-            "rsi_14": round(rsi_14, 2),
-            "sma_50": round(sma_50, 2),
+            "rsi_14": round(float(rsi_14_arr[-1]), 2),
+            "sma_50": sma_50,
             "sma_200": sma_200,
-            "last_close": round(last_close, 2),
+            "ema_10": round(float(ema_10_arr[-1]), 2),
+            "ema_20": round(float(ema_20_arr[-1]), 2),
+            "ema_50": round(float(ema_50_arr[-1]), 2),
+            "last_close": last_close,
             "above_sma_50": bool(above_sma_50),
-            "pct_from_sma_50": round(pct_from_sma_50, 2),
+            "pct_from_sma_50": pct_from_sma_50,
+            "rs_high": scan["rs_high"],
+            "buy_signal": scan["buy_signal"],
+            "rs_value": scan["details"]["rs_value"],
         }
     except Exception as exc:  # noqa: BLE001 - surface as data, never raise to the agent
         return {"error": f"get_technicals failed for '{ticker}': {exc}"}
