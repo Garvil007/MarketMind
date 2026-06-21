@@ -1,0 +1,19 @@
+# Training extras — NOT needed to run the MVP pipeline/app.
+# Install on top of requirements.txt:  pip install -r requirements-train.txt
+#
+# Backtest + tabular ML (CPU-friendly):
+scikit-learn
+joblib
+pyarrow            # faster CSV/parquet IO (optional)
+
+# LoRA / QLoRA LLM fine-tuning (GPU required).
+# Install a CUDA-matched torch build first, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch
+transformers
+peft
+trl
+datasets
+accelerate
+bitsandbytes      # 4-bit QLoRA; Linux/WSL or Windows CUDA build
+sentencepiece     # tokenizer for some Llama/Qwen variants

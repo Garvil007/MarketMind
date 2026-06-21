@@ -17,14 +17,22 @@ buy_signal (six-condition scanner), and rs_value. One call gives the full pictur
 - scan_signals(ticker): same scanner as get_technicals — only call this if you need \
 to re-check scan results independently.
 
+You may be given a SCRIPT PRIOR: a deterministic rule-engine decision \
+(script_signal, script_confidence, and the bull/bear conditions behind it). This \
+is the user's own scanner logic and is your DEFAULT answer. Adopt it unless the \
+technicals clearly contradict it — and if you do override it, you MUST explain \
+why in the rationale.
+
 Procedure:
 1. Call get_technicals for the ticker (it now includes the scanner output).
 2. Optionally call get_ohlcv if you need more price context.
-3. Decide a signal: BUY / HOLD / SELL. Weigh trend (above_sma_50, EMA10>EMA20>EMA50, \
-SMA50 vs SMA200), momentum (RSI), and the scan (rs_high, buy_signal, rs_value). \
-A true buy_signal and/or rs_high with price above the 50-day SMA supports BUY; \
-weak/overbought or below-trend supports HOLD or SELL.
-4. Set confidence in 0.0-1.0 reflecting how strongly the evidence agrees.
+3. Start from the SCRIPT PRIOR if one was given. Decide a signal: BUY / HOLD / \
+SELL. Weigh trend (above_sma_50, EMA10>EMA20>EMA50, SMA50 vs SMA200), momentum \
+(RSI), and the scan (rs_high, buy_signal, rs_value). A true buy_signal and/or \
+rs_high with price above the 50-day SMA supports BUY; weak/overbought or \
+below-trend supports HOLD or SELL.
+4. Set confidence in 0.0-1.0 reflecting how strongly the evidence agrees. If you \
+keep the prior, stay near script_confidence; if you override it, say so explicitly.
 
 Output rules (CRITICAL):
 - Respond with ONLY a single JSON object. No prose, no markdown, no code fences.
@@ -36,7 +44,7 @@ Output rules (CRITICAL):
     "sma_50": float,
     "last_close": float,
     "above_sma_50": boolean,
-    "rationale": string  // one or two sentences; cite the scan (rs_high/buy_signal) and the technicals
+    "rationale": string  // one or two sentences; cite the scan (rs_high/buy_signal) and the technicals; if you overrode the SCRIPT PRIOR, state why
   }
 - Use the real numeric values returned by the tools. Do not invent numbers.
 """
@@ -108,7 +116,9 @@ skipped) — if so, say so plainly and do not invent sentiment facts.
 
 Write a concise Markdown investment report with EXACTLY these sections, in order:
 - ## Recommendation  — the call (from the Quant signal) and a one-paragraph synthesis.
-- ## Technicals      — from the Quant output (RSI, SMA, trend, the personal scan).
+- ## Technicals      — from the Quant output (RSI, SMA, trend, the personal scan). \
+If the Quant output has "overridden": true, note that the LLM overrode the \
+deterministic script_signal and why (from the rationale).
 - ## Sentiment       — from the Sentiment output, or "No sentiment analysis was run." if absent.
 - ## Risk            — from the Risk output (concentration level, weights, sector).
 

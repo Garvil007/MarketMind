@@ -11,6 +11,7 @@ import talib
 import yfinance as yf
 from fastmcp import FastMCP
 
+from marketmind import scanner
 from marketmind.scanner import (
     INDEX_SYMBOL_USA,
     _safe_array,

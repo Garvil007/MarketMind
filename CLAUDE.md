@@ -146,6 +146,30 @@ marketmind/
     └── app/                  # streamlit_app
 ```
 
+## Quant Signal — Script-First (see `src/marketmind/quant_signal.py`)
+
+The Quant call is no longer left entirely to the LLM. `quant_signal.compute_signal`
+turns a `get_technicals` payload into a deterministic BUY/HOLD/SELL + confidence
+from the scanner conditions (buy_signal, rs_high, SMA/EMA trend, RSI). The quant
+node fetches technicals via MCP, computes this **prior**, and injects it into the
+agent prompt as the default. The LLM may override it but must say why; the result
+records `script_signal`, `script_confidence`, and `overridden` on the quant dict.
+This is the single definition of "what the script decides" — reused by backtest.
+
+## Backtest & Training (extension — `src/marketmind/backtest/`)
+
+Offline stack; no servers needed (yfinance direct). Heavy deps in
+`requirements-train.txt` (`make install-train`).
+
+- `features.py` — walk-forward indicator/condition table mirroring `scanner.py`.
+- `engine.py`   — trade simulator + metrics for the script signal (`make backtest`).
+- `dataset.py`  — labeled CSV (ML) + chat JSONL (LLM SFT) from forward returns (`make dataset`).
+- `ml_model.py` — scikit-learn gradient-boosted classifier (`make train-ml`).
+- `llm_finetune.py` — LoRA/QLoRA SFT of Qwen/Llama on the JSONL (`make train-llm`, GPU).
+
+Artifacts under `data/` (gitignored): `data/training/`, `data/models/`.
+Trained models are not yet wired into the live pipeline (offline eval only).
+
 ## Build Order (next, not yet done)
 
 1. `portfolio_db.py` + `seed_db.py` (SQLite schema + sample holdings).

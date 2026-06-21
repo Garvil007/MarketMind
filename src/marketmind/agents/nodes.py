@@ -15,8 +15,8 @@ import functools
 import json
 import re
 
-from marketmind import config
-from marketmind.agents.factory import MODEL, build_agent
+from marketmind import config, quant_signal
+from marketmind.agents.factory import MODEL, build_agent, get_scoped_tools
 from marketmind.agents.prompts import (
     QUANT_SYSTEM_PROMPT,
     REPORT_SYSTEM_PROMPT,
@@ -133,6 +133,25 @@ async def _run_scoped_agent(server_name: str, prompt: str, message: str, require
     return _parse_result(_message_text(result["messages"][-1]), required)
 
 
+async def _call_tool(server_name: str, tool_name: str, args: dict) -> dict:
+    """Invoke a single MCP tool directly (no agent) and return its dict payload.
+
+    Used so the Quant node can compute the deterministic script prior from real
+    technicals while still going through MCP (never touching yfinance directly).
+    """
+    tools = await get_scoped_tools(server_name)
+    tool = next((t for t in tools if t.name == tool_name), None)
+    if tool is None:
+        raise ValueError(f"Tool '{tool_name}' not found on server '{server_name}'.")
+    raw = await tool.ainvoke(args)
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        return json.loads(raw)
+    # Some adapters return a content-block list; pull the text out and parse.
+    return _extract_json(_message_text(raw) if hasattr(raw, "content") else str(raw))
+
+
 # --- Graph nodes -----------------------------------------------------------
 
 @_safe("ingest")
@@ -168,12 +187,36 @@ async def quant_node(state: MarketMindState) -> dict:
     With the flag off this path is dead, so the baseline is byte-for-byte unchanged.
     """
     ticker = state["ticker"]
+
+    # Script-first: compute the deterministic prior from real technicals, then
+    # hand it to the LLM as its default. The LLM may override it with a reason.
+    decision = None
+    prior_msg = ""
+    try:
+        tech = await _call_tool("market_data", "get_technicals", {"ticker": ticker})
+        if "error" not in tech:
+            decision = quant_signal.compute_signal(tech)
+            prior_msg = (
+                "\n\nSCRIPT PRIOR (deterministic rule engine — treat as your default "
+                "unless the technicals clearly contradict it; if you override it, say "
+                "why in the rationale):\n" + quant_signal.prior_block(decision)
+            )
+    except Exception:  # noqa: BLE001 - prior is best-effort; LLM still runs without it
+        decision = None
+
     quant = await _run_scoped_agent(
         "market_data",
         QUANT_SYSTEM_PROMPT,
-        f"Analyze {ticker}.",
+        f"Analyze {ticker}.{prior_msg}",
         {"signal", "confidence", "rsi_14", "sma_50", "last_close", "above_sma_50", "rationale"},
     )
+
+    # Record the prior and whether the LLM overrode it, for transparency.
+    if decision is not None:
+        quant["script_signal"] = decision["signal"]
+        quant["script_confidence"] = decision["confidence"]
+        quant["overridden"] = quant.get("signal") != decision["signal"]
+
     confidence = float(quant["confidence"])
     update: dict = {"quant": quant, "run_sentiment": confidence < _SENTIMENT_CONFIDENCE_GATE}
 

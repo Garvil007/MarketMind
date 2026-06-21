@@ -17,7 +17,8 @@ else
   PY := $(VENV)/bin/python
 endif
 
-.PHONY: install seed servers app demo pipeline test clean
+.PHONY: install install-train seed servers app demo pipeline test clean \
+        backtest dataset train-ml train-llm
 
 install:
 	python -m venv $(VENV)
@@ -45,6 +46,27 @@ demo: seed
 
 pipeline:
 	$(PY) scripts/run_pipeline.py
+
+# --- Backtest + training (see requirements-train.txt) ---------------------
+
+install-train:
+	$(PY) -m pip install -r requirements-train.txt
+
+# Backtest the deterministic script signal. Pass tickers via T="NVDA AAPL".
+backtest:
+	PYTHONPATH=src $(PY) scripts/run_backtest.py $(T)
+
+# Build tabular CSV + chat JSONL training data. Pass tickers via T="NVDA AAPL".
+dataset:
+	PYTHONPATH=src $(PY) scripts/build_dataset.py $(T)
+
+# Train the tabular ML classifier on data/training/dataset.csv.
+train-ml:
+	PYTHONPATH=src $(PY) scripts/train_ml.py
+
+# LoRA/QLoRA fine-tune (GPU + make install-train required).
+train-llm:
+	PYTHONPATH=src $(PY) scripts/train_llm.py
 
 test:
 	$(PY) scripts/test_agents.py
