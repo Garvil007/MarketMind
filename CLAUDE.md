@@ -176,6 +176,21 @@ None → block skipped if no `data/models/quant_clf.joblib` yet). Quant dict gai
 training, `get_technicals` now also returns `plus_di`, `weekly_rsi`, `cond1..6`
 (via `scanner` result `conditions`). The LoRA/QLoRA LLM stays offline eval only.
 
+## Claude Trader — Paper Trading (extension — `src/marketmind/paper_trader.py`)
+
+A VIRTUAL paper-trading agent (advisory only, no broker). Starts with $500 cash
+under `account_id="claude"` and trades a small US watchlist OFFLINE — yfinance
+direct via `backtest.features`, scored by `quant_signal.compute_signal` + advisory
+`ml_model` vote. No MCP servers / Groq needed. Each run fetches fresh prices,
+sells held names that flip to SELL, buys fresh BUY candidates (ranked by
+confidence, capped at `MAX_POS_FRAC` of starting cash, `MAX_POSITIONS` max),
+marks to market, and reports total value / P&L / return %.
+
+State persists in the same SQLite db (`data/marketmind.db`), new tables:
+`paper_account`, `paper_positions`, `paper_trades` (ISO-8601 UTC timestamps).
+Surfaced as the **Claude Trader** tab in `app/streamlit_app.py`; headless via
+`scripts/run_paper_trader.py` (`make paper`).
+
 ## Build Order (next, not yet done)
 
 1. `portfolio_db.py` + `seed_db.py` (SQLite schema + sample holdings).

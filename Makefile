@@ -18,7 +18,7 @@ else
 endif
 
 .PHONY: install install-train seed servers app demo pipeline test clean \
-        backtest dataset train-ml train-llm
+        backtest dataset train-ml train-llm paper
 
 install:
 	python -m venv $(VENV)
@@ -67,6 +67,10 @@ train-ml:
 # LoRA/QLoRA fine-tune (GPU + make install-train required).
 train-llm:
 	PYTHONPATH=src $(PY) scripts/train_llm.py
+
+# Run the Claude paper-trading agent once. Tickers via T="NVDA AAPL"; --reset to restart.
+paper:
+	PYTHONPATH=src $(PY) scripts/run_paper_trader.py $(T)
 
 test:
 	$(PY) scripts/test_agents.py

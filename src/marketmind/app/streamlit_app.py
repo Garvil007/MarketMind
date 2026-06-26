@@ -1,12 +1,18 @@
 """MarketMind Streamlit dashboard.
 
-Calls the LangGraph orchestrator IN-PROCESS (no HTTP to the graph) and lights up
-four agent cards as the real pipeline streams: Quant, Sentiment, Risk, Report.
-Status is driven by orchestrator.run_analysis_stream — not a fake timer.
+Two tabs:
+  - Research: calls the LangGraph orchestrator IN-PROCESS (no HTTP to the graph)
+    and lights up four agent cards as the real pipeline streams (Quant, Sentiment,
+    Risk, Report). Status is driven by orchestrator.run_analysis_stream.
+  - Claude Trader: a VIRTUAL paper-trading account ($500 by default) driven by the
+    deterministic script signal + advisory ML vote (offline, yfinance direct — no
+    MCP servers needed). Each run fetches fresh prices, trades, and reports the
+    portfolio value. Advisory only; no real orders.
 
 The three specialist agents reach their data through MCP servers (teal tag); the
-Report writer has no MCP access (distinct grey tag). All three MCP servers must
-be running (:8001 market data, :8002 news, :8003 portfolio) and the DB seeded.
+Report writer has no MCP access (distinct grey tag). The Research tab needs all
+three MCP servers running (:8001 market data, :8002 news, :8003 portfolio) and the
+DB seeded. The Claude Trader tab does not.
 
 Run:  streamlit run src/marketmind/app/streamlit_app.py
 """
@@ -36,6 +42,9 @@ try:
 except config.ConfigError as e:
     st.error(f"⚙️ Configuration error: {e}")
     st.stop()
+
+# Paper trader is offline (no Groq/servers); safe to import unconditionally.
+from marketmind import paper_trader  # noqa: E402
 
 DEFAULT_QUERY = "Should I buy NVDA this week?"
 
@@ -198,30 +207,7 @@ def _run_pipeline(query: str, slots: dict) -> tuple[dict, float]:
     return final_state, latency
 
 
-# --- page -------------------------------------------------------------------
-
-st.session_state.setdefault("running", False)
-st.session_state.setdefault("result", None)
-st.session_state.setdefault("server_error", None)
-
-st.markdown("## MarketMind")
-st.caption("Multi-agent investment research")
-st.markdown(
-    "<div style='color:#10b981;font-size:13px'>● 3 MCP servers online "
-    "<span style='color:#6b7280'>· Streamable HTTP</span></div>",
-    unsafe_allow_html=True,
-)
-st.divider()
-
-query = st.text_input("Query", value=DEFAULT_QUERY, label_visibility="collapsed")
-analyze = st.button("Analyze", type="primary", disabled=st.session_state.running)
-
-st.write("")
-cols = st.columns(4)
-slots = {c: cols[i].empty() for i, c in enumerate(CARDS)}
-report_slot = st.empty()
-obs_slot = st.empty()
-
+# --- Research tab -----------------------------------------------------------
 
 def _render_static(result: dict | None) -> None:
     """Render cards + report from stored result (idle state, between runs)."""
@@ -255,30 +241,141 @@ def _render_report(state: dict, latency: float) -> None:
     )
 
 
-# Two-phase to keep the button disabled while a run is in flight:
-if analyze and not st.session_state.running:
-    st.session_state.running = True
-    st.session_state.pending_query = query
-    st.session_state.server_error = None
-    st.rerun()
+def _render_research() -> None:
+    """Research tab body. The card slots are declared global so the render helpers
+    (_render_static / _render_report) can see them."""
+    global slots, report_slot, obs_slot
 
-if st.session_state.running:
-    # Preflight: don't start the graph if a server is down — show a clear fix.
-    down = _down_servers()
-    if down:
-        st.session_state.server_error = _unreachable_messages(down)
-        st.session_state.running = False
+    st.markdown(
+        "<div style='color:#10b981;font-size:13px'>● 3 MCP servers online "
+        "<span style='color:#6b7280'>· Streamable HTTP</span></div>",
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    query = st.text_input("Query", value=DEFAULT_QUERY, label_visibility="collapsed")
+    analyze = st.button("Analyze", type="primary", disabled=st.session_state.running)
+
+    st.write("")
+    cols = st.columns(4)
+    slots = {c: cols[i].empty() for i, c in enumerate(CARDS)}
+    report_slot = st.empty()
+    obs_slot = st.empty()
+
+    # Two-phase to keep the button disabled while a run is in flight:
+    if analyze and not st.session_state.running:
+        st.session_state.running = True
+        st.session_state.pending_query = query
+        st.session_state.server_error = None
         st.rerun()
 
-    state, latency = _run_pipeline(st.session_state.pending_query, slots)
-    errors = state.get("errors", [])
-    _render_report(state, latency)
-    if errors:
-        st.warning("Some nodes reported errors:\n" + "\n".join(f"- {e}" for e in errors))
-    st.session_state.result = {"state": state, "latency": latency}
-    st.session_state.running = False
-    st.rerun()
-else:
-    for msg in st.session_state.server_error or []:
-        st.error(msg)
-    _render_static(st.session_state.result)
+    if st.session_state.running:
+        # Preflight: don't start the graph if a server is down — show a clear fix.
+        down = _down_servers()
+        if down:
+            st.session_state.server_error = _unreachable_messages(down)
+            st.session_state.running = False
+            st.rerun()
+
+        state, latency = _run_pipeline(st.session_state.pending_query, slots)
+        errors = state.get("errors", [])
+        _render_report(state, latency)
+        if errors:
+            st.warning("Some nodes reported errors:\n" + "\n".join(f"- {e}" for e in errors))
+        st.session_state.result = {"state": state, "latency": latency}
+        st.session_state.running = False
+        st.rerun()
+    else:
+        for msg in st.session_state.server_error or []:
+            st.error(msg)
+        _render_static(st.session_state.result)
+
+
+# --- Claude Trader tab ------------------------------------------------------
+
+def _trader_safe_summary() -> dict | None:
+    """Portfolio summary, or None if the marking fetch fails (offline/rate-limit)."""
+    try:
+        return paper_trader.portfolio_summary()
+    except Exception as e:  # noqa: BLE001 - surface in the UI, never crash the tab
+        st.warning(f"Could not value the portfolio right now: {e}")
+        return None
+
+
+def _render_trader() -> None:
+    """Claude Trader tab: virtual $500 agent, fresh data each run, portfolio report."""
+    st.markdown("### 🤖 Claude Trader")
+    st.caption("VIRTUAL paper trading — advisory only, no real orders. "
+               "Script signal + advisory ML vote, offline (no MCP servers).")
+
+    c1, c2 = st.columns([1, 3])
+    cash = c1.number_input("Starting cash ($)", min_value=50.0, step=50.0,
+                           value=float(paper_trader.STARTING_CASH))
+    wl = c2.text_input("Watchlist (comma-separated US tickers)",
+                       value=", ".join(paper_trader.DEFAULT_WATCHLIST))
+
+    b1, b2, _ = st.columns([1, 1, 3])
+    run_btn = b1.button("Run Claude Trader", type="primary")
+    reset_btn = b2.button("Reset account")
+
+    if reset_btn:
+        paper_trader.reset_paper(starting_cash=cash)
+        st.session_state.trader_run = None
+        st.session_state.trader_summary = _trader_safe_summary()
+        st.success(f"Account reset to ${cash:,.2f}.")
+
+    if run_btn:
+        tickers = [t.strip() for t in wl.split(",") if t.strip()]
+        with st.spinner("Fetching fresh prices, computing signals, trading…"):
+            try:
+                st.session_state.trader_run = paper_trader.decide_and_trade(watchlist=tickers)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Trader run failed: {e}")
+            st.session_state.trader_summary = _trader_safe_summary()
+
+    summary = st.session_state.trader_summary or _trader_safe_summary()
+    if summary:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total value", f"${summary['total_value']:,.2f}",
+                  f"{summary['total_return_pct']:+.2f}%")
+        m2.metric("Cash", f"${summary['cash']:,.2f}")
+        m3.metric("Positions value", f"${summary['positions_value']:,.2f}")
+        m4.metric("Total P&L", f"${summary['total_pnl']:+,.2f}")
+        if summary["positions"]:
+            st.markdown("**Holdings** (marked to market)")
+            st.dataframe(summary["positions"], use_container_width=True, hide_index=True)
+        else:
+            st.info("No open positions — all in cash.")
+
+    run = st.session_state.trader_run
+    if run:
+        if run["trades"]:
+            st.markdown("**Trades this run**")
+            st.dataframe(run["trades"], use_container_width=True, hide_index=True)
+        else:
+            st.caption("No trades this run — no fresh BUY/SELL signals.")
+        if run["skipped"]:
+            st.caption("Skipped (no data): " + ", ".join(run["skipped"]))
+
+    history = paper_trader.recent_trades()
+    if history:
+        with st.expander("Trade history"):
+            st.dataframe(history, use_container_width=True, hide_index=True)
+
+
+# --- page -------------------------------------------------------------------
+
+st.session_state.setdefault("running", False)
+st.session_state.setdefault("result", None)
+st.session_state.setdefault("server_error", None)
+st.session_state.setdefault("trader_run", None)
+st.session_state.setdefault("trader_summary", None)
+
+st.markdown("## MarketMind")
+st.caption("Multi-agent investment research")
+
+tab_research, tab_trader = st.tabs(["Research", "Claude Trader"])
+with tab_research:
+    _render_research()
+with tab_trader:
+    _render_trader()
