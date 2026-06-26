@@ -17,6 +17,7 @@ import re
 
 from marketmind import config, quant_signal
 from marketmind.agents.factory import MODEL, build_agent, get_scoped_tools
+from marketmind.backtest import ml_model
 from marketmind.agents.prompts import (
     QUANT_SYSTEM_PROMPT,
     REPORT_SYSTEM_PROMPT,
@@ -190,7 +191,10 @@ async def quant_node(state: MarketMindState) -> dict:
 
     # Script-first: compute the deterministic prior from real technicals, then
     # hand it to the LLM as its default. The LLM may override it with a reason.
+    # Alongside it, consult the trained ML model (if any) as an ADVISORY second
+    # vote. Both are best-effort; the LLM still runs if either is unavailable.
     decision = None
+    ml = None
     prior_msg = ""
     try:
         tech = await _call_tool("market_data", "get_technicals", {"ticker": ticker})
@@ -201,7 +205,14 @@ async def quant_node(state: MarketMindState) -> dict:
                 "unless the technicals clearly contradict it; if you override it, say "
                 "why in the rationale):\n" + quant_signal.prior_block(decision)
             )
-    except Exception:  # noqa: BLE001 - prior is best-effort; LLM still runs without it
+            ml = ml_model.predict_from_tech(tech)  # None if no trained model yet
+            if ml is not None:
+                prior_msg += (
+                    "\n\nML SECOND OPINION (data-driven model trained on historical "
+                    "forward returns — advisory only; weigh it, but the SCRIPT PRIOR "
+                    "stays your default):\n" + json.dumps(ml, indent=2)
+                )
+    except Exception:  # noqa: BLE001 - priors are best-effort; LLM still runs without them
         decision = None
 
     quant = await _run_scoped_agent(
@@ -216,6 +227,11 @@ async def quant_node(state: MarketMindState) -> dict:
         quant["script_signal"] = decision["signal"]
         quant["script_confidence"] = decision["confidence"]
         quant["overridden"] = quant.get("signal") != decision["signal"]
+    # Record the ML second vote (advisory) when a trained model is present.
+    if ml is not None:
+        quant["ml_signal"] = ml["signal"]
+        quant["ml_confidence"] = ml["confidence"]
+        quant["ml_proba"] = ml["proba"]
 
     confidence = float(quant["confidence"])
     update: dict = {"quant": quant, "run_sentiment": confidence < _SENTIMENT_CONFIDENCE_GATE}

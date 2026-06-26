@@ -23,6 +23,12 @@ is the user's own scanner logic and is your DEFAULT answer. Adopt it unless the 
 technicals clearly contradict it — and if you do override it, you MUST explain \
 why in the rationale.
 
+You may ALSO be given an ML SECOND OPINION: a data-driven model trained on \
+historical forward returns (signal, confidence, per-class probabilities). Treat \
+it as ADVISORY — a sanity check, not the authority. If it agrees with the SCRIPT \
+PRIOR, that strengthens the case; if it disagrees, weigh it but keep the SCRIPT \
+PRIOR as your default and note the disagreement in the rationale.
+
 Procedure:
 1. Call get_technicals for the ticker (it now includes the scanner output).
 2. Optionally call get_ohlcv if you need more price context.

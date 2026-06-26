@@ -168,7 +168,13 @@ Offline stack; no servers needed (yfinance direct). Heavy deps in
 - `llm_finetune.py` — LoRA/QLoRA SFT of Qwen/Llama on the JSONL (`make train-llm`, GPU).
 
 Artifacts under `data/` (gitignored): `data/training/`, `data/models/`.
-Trained models are not yet wired into the live pipeline (offline eval only).
+
+**Live wiring:** the quant node calls `ml_model.predict_from_tech` and injects the
+result as an ADVISORY **ML SECOND OPINION** alongside the SCRIPT PRIOR (returns
+None → block skipped if no `data/models/quant_clf.joblib` yet). Quant dict gains
+`ml_signal`, `ml_confidence`, `ml_proba`. To feed it the same features as
+training, `get_technicals` now also returns `plus_di`, `weekly_rsi`, `cond1..6`
+(via `scanner` result `conditions`). The LoRA/QLoRA LLM stays offline eval only.
 
 ## Build Order (next, not yet done)
 

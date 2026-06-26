@@ -35,6 +35,11 @@ def _empty_result(symbol: str, market: str, err: Optional[str]) -> Dict[str, Any
             "symbol": symbol, "price": 0.0, "change_pct": 0.0,
             "volume": 0, "avg_volume": 0, "volume_ratio": 0.0, "rs_value": 0.0,
         },
+        "conditions": {
+            "cond1": False, "cond2": False, "cond3": False,
+            "cond4": False, "cond5": False, "cond6": False,
+            "plus_di": 0.0, "weekly_rsi": 0.0,
+        },
         "error": err,
     }
 
@@ -122,6 +127,14 @@ def scan_with_data(symbol: str, market: str,
 
             if all([cond1, cond2, cond3, cond4, cond5, cond6]):
                 result["buy_signal"] = True
+
+            # Expose the individual conditions so live features match training.
+            result["conditions"] = {
+                "cond1": bool(cond1), "cond2": bool(cond2), "cond3": bool(cond3),
+                "cond4": bool(cond4), "cond5": bool(cond5), "cond6": bool(cond6),
+                "plus_di": round(float(plus_di[-1]), 4) if len(plus_di) else 0.0,
+                "weekly_rsi": round(last_weekly_rsi, 4),
+            }
         except Exception as exc:
             log.debug(f"{symbol}: buy — {exc}")
 

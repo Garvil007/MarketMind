@@ -120,6 +120,7 @@ def get_technicals(ticker: str) -> dict:
         pct_from_sma_50 = round((last_close - sma_50) / sma_50 * 100.0, 2) if sma_50 else 0.0
 
         scan = scan_with_data(ticker.upper(), "usa", data_2y, idx_2y)
+        conds = scan.get("conditions", {})
 
         return {
             "ticker": ticker.upper(),
@@ -135,6 +136,16 @@ def get_technicals(ticker: str) -> dict:
             "rs_high": scan["rs_high"],
             "buy_signal": scan["buy_signal"],
             "rs_value": scan["details"]["rs_value"],
+            # Individual scanner conditions, so the ML model sees the same
+            # features live as it was trained on (backtest.dataset.FEATURE_COLUMNS).
+            "plus_di": conds.get("plus_di", 0.0),
+            "weekly_rsi": conds.get("weekly_rsi", 0.0),
+            "cond1": conds.get("cond1", False),
+            "cond2": conds.get("cond2", False),
+            "cond3": conds.get("cond3", False),
+            "cond4": conds.get("cond4", False),
+            "cond5": conds.get("cond5", False),
+            "cond6": conds.get("cond6", False),
         }
     except Exception as exc:  # noqa: BLE001 - surface as data, never raise to the agent
         return {"error": f"get_technicals failed for '{ticker}': {exc}"}
