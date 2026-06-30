@@ -362,6 +362,39 @@ def _render_trader() -> None:
         with st.expander("Trade history"):
             st.dataframe(history, use_container_width=True, hide_index=True)
 
+    _render_learning()
+
+
+def _render_learning() -> None:
+    """Learning loop: retrain the ML model on the account's own closed trades."""
+    st.divider()
+    st.markdown("**🧠 Learn from closed trades**")
+    try:
+        n = paper_trader.outcomes_count()
+    except Exception:  # noqa: BLE001
+        n = 0
+    st.caption(
+        f"{n} closed-trade outcome(s) logged. Each SELL records the entry setup + "
+        "realized return; retraining folds these (plus history) into the ML model so "
+        "it learns from its own mistakes. Need ≥10 to retrain."
+    )
+    if st.button("Retrain ML from trades", disabled=n < 10):
+        with st.spinner("Merging closed trades with history and retraining…"):
+            try:
+                res = paper_trader.retrain_from_trades()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Retrain failed: {e}")
+                return
+        if res["status"] == "skipped":
+            st.warning(f"Skipped — {res['reason']}.")
+        else:
+            acc = res.get("accuracy", "n/a")
+            st.success(
+                f"Retrained on {res['n_total']} rows "
+                f"({res['n_new']} paper trades + {res['n_base']} historical). "
+                f"Holdout accuracy: {acc}."
+            )
+
 
 # --- page -------------------------------------------------------------------
 

@@ -109,12 +109,20 @@ def _tech_to_vector(tech: dict) -> np.ndarray:
 
 
 def load(model_path: str | Path = DEFAULT_MODEL_PATH):
-    """Load the persisted model bundle, or None if it hasn't been trained yet."""
-    import joblib
+    """Load the persisted model bundle, or None if it hasn't been trained yet.
 
+    Returns None (not an error) when the artifact is missing OR when the training
+    deps (joblib/scikit-learn) aren't installed — the ML vote is advisory, so the
+    caller falls back to the deterministic script signal.
+    """
     path = Path(model_path)
     if not path.exists():
         return None
+    try:
+        import joblib
+    except ImportError:
+        return None
+    # Safe: artifact is self-generated locally by train() below, not an external source.
     return joblib.load(path)
 
 

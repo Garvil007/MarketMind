@@ -18,7 +18,7 @@ else
 endif
 
 .PHONY: install install-train seed servers app demo pipeline test clean \
-        backtest dataset train-ml train-llm paper
+        backtest dataset train-ml train-llm paper retrain-from-trades
 
 install:
 	python -m venv $(VENV)
@@ -71,6 +71,10 @@ train-llm:
 # Run the Claude paper-trading agent once. Tickers via T="NVDA AAPL"; --reset to restart.
 paper:
 	PYTHONPATH=src $(PY) scripts/run_paper_trader.py $(T)
+
+# Retrain the ML model on Claude Trader's own closed trades (learning loop).
+retrain-from-trades:
+	PYTHONPATH=src $(PY) scripts/retrain_from_trades.py $(T)
 
 test:
 	$(PY) scripts/test_agents.py

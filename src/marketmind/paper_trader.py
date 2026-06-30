@@ -12,8 +12,10 @@ This is VIRTUAL only — no broker, no order execution. Advisory per project sco
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from marketmind import quant_signal
@@ -28,6 +30,18 @@ STARTING_CASH = 500.0
 MAX_POS_FRAC = 0.25          # cap one position at 25% of starting cash
 MAX_POSITIONS = 6            # most names held at once
 MIN_TRADE_USD = 1.0         # ignore trades smaller than this
+
+# Learning loop: label a closed trade by its realized return. A BUY that gained
+# more than UP_THRESH was "right" (label BUY), one that lost more than DOWN_THRESH
+# was "wrong" (label SELL — should not have bought); in between is HOLD.
+OUTCOME_UP_THRESH = 0.05     # +5% realized -> the BUY was correct
+OUTCOME_DOWN_THRESH = -0.05  # -5% realized -> the BUY was a mistake
+
+# How the (retrained) ML vote influences trades. When a model exists, a confident
+# ML SELL vetoes a script BUY, and a confirming ML BUY lifts a candidate's rank.
+# No model -> these are no-ops, so behavior matches the script-only baseline.
+ML_VETO_CONF = 0.60          # ML must be this confident in SELL to veto a script BUY
+ML_RANK_WEIGHT = 0.5         # blend weight of ML BUY-confidence into ranking
 
 # Default watchlist — large/liquid US names; override per call/UI.
 DEFAULT_WATCHLIST = ["NVDA", "AAPL", "MSFT", "AMD", "TSLA", "GOOGL", "AMZN", "META"]
@@ -45,6 +59,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     ticker     TEXT NOT NULL,
     shares     REAL NOT NULL,
     avg_cost   REAL NOT NULL,
+    entry_tech TEXT,
+    entry_ts   TEXT,
     PRIMARY KEY (account_id, ticker)
 );
 CREATE TABLE IF NOT EXISTS paper_trades (
@@ -58,7 +74,35 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     reason     TEXT,
     ts         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS paper_trade_outcomes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      TEXT NOT NULL,
+    ticker          TEXT NOT NULL,
+    entry_price     REAL NOT NULL,
+    exit_price      REAL NOT NULL,
+    realized_return REAL NOT NULL,
+    label           TEXT NOT NULL,
+    features_json   TEXT NOT NULL,
+    entry_ts        TEXT,
+    exit_ts         TEXT NOT NULL
+);
 """
+
+# Columns added after the original paper_positions shipped; ALTER is a no-op-safe
+# migration for databases created before the learning loop existed.
+_MIGRATIONS = (
+    "ALTER TABLE paper_positions ADD COLUMN entry_tech TEXT;",
+    "ALTER TABLE paper_positions ADD COLUMN entry_ts TEXT;",
+)
+
+
+def _migrate(conn) -> None:
+    """Add columns missing from pre-existing databases. Idempotent."""
+    for stmt in _MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except Exception:  # column already exists -> sqlite raises OperationalError
+            pass
 
 
 def _now() -> str:
@@ -71,6 +115,7 @@ def init_paper(account: str = ACCOUNT_ID, starting_cash: float = STARTING_CASH) 
     """Create tables and seed the account with starting cash if it doesn't exist."""
     with connect() as conn:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         row = conn.execute(
             "SELECT account_id FROM paper_account WHERE account_id = ?;", (account,)
         ).fetchone()
@@ -88,6 +133,9 @@ def reset_paper(account: str = ACCOUNT_ID, starting_cash: float = STARTING_CASH)
     """Wipe an account's positions/trades and reset cash to starting_cash."""
     with connect() as conn:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
+        # Positions/trades are wiped on reset, but paper_trade_outcomes is kept on
+        # purpose — accumulated learning data survives an account restart.
         conn.execute("DELETE FROM paper_positions WHERE account_id = ?;", (account,))
         conn.execute("DELETE FROM paper_trades WHERE account_id = ?;", (account,))
         now = _now()
@@ -108,11 +156,13 @@ def _load_account(conn, account: str) -> dict[str, Any]:
     return {"cash": float(row["cash"]), "starting_cash": float(row["starting_cash"])}
 
 
-def _load_positions(conn, account: str) -> dict[str, dict[str, float]]:
+def _load_positions(conn, account: str) -> dict[str, dict[str, Any]]:
     cur = conn.execute(
-        "SELECT ticker, shares, avg_cost FROM paper_positions WHERE account_id = ?;", (account,)
+        "SELECT ticker, shares, avg_cost, entry_tech, entry_ts "
+        "FROM paper_positions WHERE account_id = ?;", (account,)
     )
-    return {r["ticker"]: {"shares": float(r["shares"]), "avg_cost": float(r["avg_cost"])}
+    return {r["ticker"]: {"shares": float(r["shares"]), "avg_cost": float(r["avg_cost"]),
+                          "entry_tech": r["entry_tech"], "entry_ts": r["entry_ts"]}
             for r in cur.fetchall()}
 
 
@@ -143,7 +193,54 @@ def evaluate(ticker: str) -> Optional[dict[str, Any]]:
         "last": round(last, 2),
         "reasons": dec["reasons"],
         "ml": ml,
+        "tech": tech,  # entry features, stored at BUY so closed trades can be labeled/retrained
     }
+
+
+# --- learning: outcome capture ----------------------------------------------
+
+def _label_for_return(realized: float) -> str:
+    """Map a closed trade's realized return to a supervised label."""
+    if realized >= OUTCOME_UP_THRESH:
+        return "BUY"
+    if realized <= OUTCOME_DOWN_THRESH:
+        return "SELL"
+    return "HOLD"
+
+
+def _ml_vetoes_buy(ev: dict[str, Any]) -> bool:
+    """True if a confident ML SELL vote should block a script BUY."""
+    ml = ev.get("ml")
+    return bool(ml and ml.get("signal") == "SELL"
+                and float(ml.get("confidence", 0.0)) >= ML_VETO_CONF)
+
+
+def _rank_score(ev: dict[str, Any]) -> float:
+    """BUY ranking score: script confidence, lifted when ML also votes BUY."""
+    score = float(ev["confidence"])
+    ml = ev.get("ml")
+    if ml and ml.get("signal") == "BUY":
+        score = (1 - ML_RANK_WEIGHT) * score + ML_RANK_WEIGHT * float(ml.get("confidence", 0.0))
+    return score
+
+
+def _record_outcome(conn, account: str, ticker: str, pos: dict[str, Any], exit_price: float) -> None:
+    """Log a closed position's entry features + realized return as a training row.
+
+    This is the feedback step: a BUY that later lost money becomes a SELL-labeled
+    example, so retrain_from_trades teaches the model to avoid that setup next time.
+    """
+    entry = float(pos.get("avg_cost") or 0.0)
+    if entry <= 0:
+        return
+    realized = (exit_price - entry) / entry
+    conn.execute(
+        "INSERT INTO paper_trade_outcomes "
+        "(account_id, ticker, entry_price, exit_price, realized_return, label, "
+        " features_json, entry_ts, exit_ts) VALUES (?,?,?,?,?,?,?,?,?);",
+        (account, ticker, entry, exit_price, realized, _label_for_return(realized),
+         pos.get("entry_tech") or "{}", pos.get("entry_ts"), _now()),
+    )
 
 
 # --- trading ----------------------------------------------------------------
@@ -182,14 +279,16 @@ def decide_and_trade(account: str = ACCOUNT_ID, watchlist: Optional[list[str]] =
                 trades.append({"ticker": t, "side": "SELL", "shares": round(pos["shares"], 4),
                                "price": ev["last"], "signal": "SELL",
                                "reason": "; ".join(ev["reasons"])[:200]})
+                _record_outcome(conn, account, t, pos, exit_price=ev["last"])
                 conn.execute("DELETE FROM paper_positions WHERE account_id=? AND ticker=?;", (account, t))
                 del positions[t]
 
         # --- BUY: fresh BUY candidates, ranked by confidence --------------
         per_cap = starting * MAX_POS_FRAC
         candidates = sorted(
-            (ev for t, ev in evals.items() if ev["signal"] == "BUY" and t not in positions),
-            key=lambda e: e["confidence"], reverse=True,
+            (ev for t, ev in evals.items()
+             if ev["signal"] == "BUY" and t not in positions and not _ml_vetoes_buy(ev)),
+            key=_rank_score, reverse=True,
         )
         for ev in candidates:
             if len(positions) >= MAX_POSITIONS:
@@ -202,11 +301,16 @@ def decide_and_trade(account: str = ACCOUNT_ID, watchlist: Optional[list[str]] =
             if cost < MIN_TRADE_USD:
                 continue
             cash -= cost
-            positions[ev["ticker"]] = {"shares": shares, "avg_cost": ev["last"]}
+            entry_tech = json.dumps(ev.get("tech", {}))
+            entry_ts = _now()
+            positions[ev["ticker"]] = {"shares": shares, "avg_cost": ev["last"],
+                                       "entry_tech": entry_tech, "entry_ts": entry_ts}
             conn.execute(
-                "INSERT INTO paper_positions (account_id, ticker, shares, avg_cost) VALUES (?,?,?,?) "
-                "ON CONFLICT(account_id, ticker) DO UPDATE SET shares=excluded.shares, avg_cost=excluded.avg_cost;",
-                (account, ev["ticker"], shares, ev["last"]),
+                "INSERT INTO paper_positions (account_id, ticker, shares, avg_cost, entry_tech, entry_ts) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(account_id, ticker) DO UPDATE SET shares=excluded.shares, "
+                "avg_cost=excluded.avg_cost, entry_tech=excluded.entry_tech, entry_ts=excluded.entry_ts;",
+                (account, ev["ticker"], shares, ev["last"], entry_tech, entry_ts),
             )
             trades.append({"ticker": ev["ticker"], "side": "BUY", "shares": round(shares, 4),
                            "price": ev["last"], "signal": "BUY",
@@ -297,3 +401,88 @@ def recent_trades(account: str = ACCOUNT_ID, limit: int = 25) -> list[dict[str, 
             (account, limit),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+# --- learning: retrain from the account's own closed trades ------------------
+
+def outcomes_count(account: str = ACCOUNT_ID) -> int:
+    """How many labeled closed-trade outcomes have accumulated for retraining."""
+    init_paper(account)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM paper_trade_outcomes WHERE account_id = ?;", (account,)
+        ).fetchone()
+        return int(row["n"])
+
+
+def build_outcomes_df(account: str = ACCOUNT_ID):
+    """Turn logged closed-trade outcomes into a model-ready DataFrame.
+
+    Each row is the trade's ENTRY features (same columns the ML model trains on)
+    plus the realized-return label. Returns an empty DataFrame if nothing closed yet.
+    """
+    import pandas as pd
+
+    from marketmind.backtest.dataset import FEATURE_COLUMNS
+
+    init_paper(account)
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT ticker, realized_return, label, features_json, exit_ts "
+            "FROM paper_trade_outcomes WHERE account_id = ? ORDER BY id;", (account,)
+        )
+        raw = [dict(r) for r in cur.fetchall()]
+
+    records: list[dict[str, Any]] = []
+    for r in raw:
+        try:
+            tech = json.loads(r["features_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not tech:
+            continue
+        vec = ml_model._tech_to_vector(tech)[0]  # FEATURE_COLUMNS order
+        row = {col: float(v) for col, v in zip(FEATURE_COLUMNS, vec)}
+        row["label"] = r["label"]
+        row["date"] = r["exit_ts"]  # lets ml_model time-order the split
+        records.append(row)
+
+    return pd.DataFrame(records, columns=[*FEATURE_COLUMNS, "label", "date"])
+
+
+def retrain_from_trades(
+    account: str = ACCOUNT_ID,
+    base_dataset: str | None = "data/training/dataset.csv",
+    model_path: str | None = None,
+    min_outcomes: int = 10,
+) -> dict[str, Any]:
+    """Retrain the ML model on the account's closed trades (+ the base dataset).
+
+    The new closed-trade outcomes are MERGED with the historical backtest dataset
+    (if present) so the model learns from BOTH history and its own mistakes —
+    "new takes are taken into account" on every retrain. Returns a status dict.
+    """
+    import pandas as pd
+
+    df_new = build_outcomes_df(account)
+    n_new = len(df_new)
+    if n_new < min_outcomes:
+        return {"status": "skipped", "reason": f"only {n_new} closed trades (need {min_outcomes})",
+                "n_new": n_new}
+
+    frames = [df_new]
+    n_base = 0
+    if base_dataset:
+        base_path = Path(base_dataset)
+        if base_path.exists():
+            df_base = pd.read_csv(base_path)
+            n_base = len(df_base)
+            frames.append(df_base)
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    kwargs: dict[str, Any] = {}
+    if model_path:
+        kwargs["model_path"] = model_path
+    metrics = ml_model.train(df, **kwargs)
+    return {"status": "trained", "n_new": n_new, "n_base": n_base,
+            "n_total": len(df), **metrics}

@@ -187,9 +187,23 @@ confidence, capped at `MAX_POS_FRAC` of starting cash, `MAX_POSITIONS` max),
 marks to market, and reports total value / P&L / return %.
 
 State persists in the same SQLite db (`data/marketmind.db`), new tables:
-`paper_account`, `paper_positions`, `paper_trades` (ISO-8601 UTC timestamps).
-Surfaced as the **Claude Trader** tab in `app/streamlit_app.py`; headless via
-`scripts/run_paper_trader.py` (`make paper`).
+`paper_account`, `paper_positions` (now also `entry_tech` JSON + `entry_ts`),
+`paper_trades` (ISO-8601 UTC timestamps). Surfaced as the **Claude Trader** tab in
+`app/streamlit_app.py`; headless via `scripts/run_paper_trader.py` (`make paper`).
+
+**Learning loop (retrain from own trades).** The script logic is fixed, but the
+ADVISORY ml_model improves from realized P&L. On BUY, the entry `tech` features are
+stored on the position; on SELL, `_record_outcome` writes the entry features +
+realized return + a label (`BUY` if ≥ `OUTCOME_UP_THRESH` +5%, `SELL` if ≤
+`OUTCOME_DOWN_THRESH` −5%, else `HOLD`) to new table `paper_trade_outcomes`.
+`retrain_from_trades` rebuilds those into a feature/label frame (`build_outcomes_df`,
+columns = ml `FEATURE_COLUMNS` + label) and MERGES them with the historical
+`data/training/dataset.csv` before calling `ml_model.train` — so each retrain folds
+the agent's newest mistakes into the model. Needs ≥`min_outcomes` (10) closed trades.
+Run via `make retrain-from-trades` / `scripts/retrain_from_trades.py`, or the
+"Retrain ML from trades" button in the Claude Trader tab. Outcomes survive
+`reset_paper` (training history kept). The deterministic script signal is unchanged —
+only the ML second opinion learns.
 
 ## Build Order (next, not yet done)
 
