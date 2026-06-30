@@ -293,6 +293,23 @@ def _render_research() -> None:
 
 # --- Claude Trader tab ------------------------------------------------------
 
+def _evaluated_rows(evaluated: list[dict]) -> list[dict]:
+    """Flatten the per-ticker evaluation list into display rows (drops bulky tech)."""
+    rows = []
+    for ev in evaluated:
+        ml = ev.get("ml") or {}
+        rows.append({
+            "ticker": ev.get("ticker"),
+            "signal": ev.get("signal"),
+            "confidence": ev.get("confidence"),
+            "last": ev.get("last"),
+            "ml_signal": ml.get("signal", "—"),
+            "ml_conf": ml.get("confidence", "—"),
+            "why": "; ".join(ev.get("reasons", []))[:120],
+        })
+    return rows
+
+
 def _trader_safe_summary() -> dict | None:
     """Portfolio summary, or None if the marking fetch fails (offline/rate-limit)."""
     try:
@@ -354,6 +371,10 @@ def _render_trader() -> None:
             st.dataframe(run["trades"], use_container_width=True, hide_index=True)
         else:
             st.caption("No trades this run — no fresh BUY/SELL signals.")
+        if run.get("evaluated"):
+            st.markdown("**Evaluated signals** (every watchlist name this run)")
+            st.dataframe(_evaluated_rows(run["evaluated"]),
+                         use_container_width=True, hide_index=True)
         if run["skipped"]:
             st.caption("Skipped (no data): " + ", ".join(run["skipped"]))
 
