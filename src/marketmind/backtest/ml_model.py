@@ -50,9 +50,15 @@ def train(
     if df is None or df.empty:
         raise ValueError("Empty dataset — build it first (scripts/build_dataset.py).")
 
-    missing = [c for c in FEATURE_COLUMNS + ["label"] if c not in df.columns]
-    if missing:
-        raise ValueError(f"Dataset missing columns: {missing}")
+    # Features added after a dataset was built (e.g. news_sentiment, which has
+    # no historical source) are backfilled as neutral 0.0 so old CSVs stay valid.
+    df = df.copy()
+    for c in FEATURE_COLUMNS:
+        if c not in df.columns:
+            df[c] = 0.0
+
+    if "label" not in df.columns:
+        raise ValueError("Dataset missing 'label' column.")
 
     train_df, test_df = _split_time_ordered(df, test_frac)
     X_train = train_df[FEATURE_COLUMNS].to_numpy(dtype=float)
@@ -102,6 +108,7 @@ def _tech_to_vector(tech: dict) -> np.ndarray:
         "above_sma_50": int(bool(tech.get("above_sma_50"))),
         "rs_high": int(bool(tech.get("rs_high"))),
         "buy_signal": int(bool(tech.get("buy_signal"))),
+        "news_sentiment": tech.get("news_sentiment", 0.0) or 0.0,
     }
     for c in ("cond1", "cond2", "cond3", "cond4", "cond5", "cond6"):
         row[c] = int(bool(tech.get(c)))
@@ -136,6 +143,10 @@ def predict_from_tech(tech: dict, model_path: str | Path = DEFAULT_MODEL_PATH) -
     if bundle is None:
         return None
     clf = bundle["model"]
+    # Artifact trained before a feature was added (e.g. news_sentiment) can't
+    # score the wider vector — treat as "no model" until retrained.
+    if list(bundle.get("features", [])) != list(FEATURE_COLUMNS):
+        return None
     vec = _tech_to_vector(tech)
     proba = clf.predict_proba(vec)[0]
     classes = list(clf.classes_)

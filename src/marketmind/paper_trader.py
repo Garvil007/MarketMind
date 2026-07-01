@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from marketmind import quant_signal
+from marketmind import news_sentiment, quant_signal
 from marketmind.backtest import ml_model
 from marketmind.backtest.features import build_features, fetch_history, row_to_tech
 from marketmind.portfolio_db import connect
@@ -179,11 +179,19 @@ def _latest_tech(ticker: str) -> Optional[tuple[dict, float]]:
 
 
 def evaluate(ticker: str) -> Optional[dict[str, Any]]:
-    """Score one ticker: deterministic signal + advisory ML vote + last price."""
+    """Score one ticker: deterministic signal + news sentiment + advisory ML vote.
+
+    News (yfinance headlines scored by VADER) is merged into the tech dict, so
+    it flows into the script decision (news condition + strong-negative veto),
+    the ML feature vector, and the entry features stored for the learning loop.
+    """
     got = _latest_tech(ticker)
     if got is None:
         return None
     tech, last = got
+    news = news_sentiment.ticker_sentiment(ticker)
+    tech["news_sentiment"] = news["compound"]
+    tech["news_count"] = news["count"]
     dec = quant_signal.compute_signal(tech)
     ml = ml_model.predict_from_tech(tech)  # None if no trained model
     return {
@@ -192,6 +200,7 @@ def evaluate(ticker: str) -> Optional[dict[str, Any]]:
         "confidence": dec["confidence"],
         "last": round(last, 2),
         "reasons": dec["reasons"],
+        "news_sentiment": news["compound"],
         "ml": ml,
         "tech": tech,  # entry features, stored at BUY so closed trades can be labeled/retrained
     }
@@ -456,19 +465,31 @@ def retrain_from_trades(
     model_path: str | None = None,
     min_outcomes: int = 10,
 ) -> dict[str, Any]:
-    """Retrain the ML model on the account's closed trades (+ the base dataset).
+    """Retrain the ML model AND retune the script from the account's closed trades.
 
-    The new closed-trade outcomes are MERGED with the historical backtest dataset
-    (if present) so the model learns from BOTH history and its own mistakes —
-    "new takes are taken into account" on every retrain. Returns a status dict.
+    Two learners update in one call:
+      1. ML second opinion — closed-trade outcomes are MERGED with the
+         historical backtest dataset (if present) so the model learns from
+         BOTH history and its own mistakes.
+      2. Script rules — script_tuner recomputes per-condition weights and the
+         min_buy_score gate from realized win rates, so conditions behind the
+         negative trades get down-weighted in future compute_signal calls.
+
+    Returns a status dict; the script tune result rides along as "script_tune".
     """
     import pandas as pd
+
+    from marketmind import script_tuner
+
+    # Script tuning has its own data gate and runs even if ML training skips —
+    # the deterministic side can start adapting from the same closed trades.
+    script_tune = script_tuner.tune_from_trades(account, min_outcomes=min_outcomes)
 
     df_new = build_outcomes_df(account)
     n_new = len(df_new)
     if n_new < min_outcomes:
         return {"status": "skipped", "reason": f"only {n_new} closed trades (need {min_outcomes})",
-                "n_new": n_new}
+                "n_new": n_new, "script_tune": script_tune}
 
     frames = [df_new]
     n_base = 0
@@ -485,4 +506,4 @@ def retrain_from_trades(
         kwargs["model_path"] = model_path
     metrics = ml_model.train(df, **kwargs)
     return {"status": "trained", "n_new": n_new, "n_base": n_base,
-            "n_total": len(df), **metrics}
+            "n_total": len(df), "script_tune": script_tune, **metrics}

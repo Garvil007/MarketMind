@@ -21,16 +21,73 @@ to a sane band so a thin signal never reads as certainty.
 """
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import Any, Optional, TypedDict
+
+log = logging.getLogger("marketmind.quant_signal")
 
 # RSI bands used by the rule engine.
 _RSI_OVERBOUGHT = 75.0
 _RSI_WEAK = 45.0
 _RSI_HEALTHY_LOW = 50.0
 
+# News sentiment bands (VADER compound on recent headlines, when available).
+_NEWS_POSITIVE = 0.2
+_NEWS_NEGATIVE = -0.2
+_NEWS_VETO = -0.3            # strong negative news downgrades a BUY to HOLD
+
 # Distinct bullish/bearish condition slots used to scale confidence:
-# buy_signal, rs_high, above_sma_50, ema_stack, golden_cross, rsi.
-_MAX_CONDS = 6
+# buy_signal, rs_high, above_sma_50, ema_stack, golden_cross, rsi, news.
+_MAX_CONDS = 7
+
+# --- Learned script parameters (tuned from the paper trader's closed trades) --
+# script_tuner.tune_from_trades rewrites this file; compute_signal reads it.
+# Defaults (all weights 1.0, min_buy_score 1.0) reproduce the untuned behavior,
+# so a fresh checkout with no params file behaves exactly like the fixed script.
+PARAMS_PATH = Path("data/models/script_params.json")
+
+DEFAULT_PARAMS: dict[str, Any] = {
+    "condition_weights": {
+        "buy_signal": 1.0,
+        "rs_high": 1.0,
+        "above_sma_50": 1.0,
+        "ema_stack_up": 1.0,
+        "golden_cross": 1.0,
+        "rsi_healthy": 1.0,
+        "news_positive": 1.0,
+    },
+    "min_buy_score": 1.0,
+}
+
+
+def load_params(path: str | Path | None = None) -> dict[str, Any]:
+    """Load tuned script params, falling back to defaults on absence/corruption.
+
+    `path=None` resolves PARAMS_PATH at call time (not def time), so tests and
+    callers may repoint the module-level PARAMS_PATH.
+    """
+    p = Path(path if path is not None else PARAMS_PATH)
+    if not p.exists():
+        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_PARAMS.items()}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        weights = dict(DEFAULT_PARAMS["condition_weights"])
+        weights.update(raw.get("condition_weights", {}))
+        return {"condition_weights": weights,
+                "min_buy_score": float(raw.get("min_buy_score", 1.0))}
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        log.warning(f"script params unreadable ({exc}); using defaults")
+        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_PARAMS.items()}
+
+
+def save_params(params: dict[str, Any], path: str | Path | None = None) -> str:
+    """Persist tuned script params (written by script_tuner). Returns the path."""
+    p = Path(path if path is not None else PARAMS_PATH)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(params, indent=2), encoding="utf-8")
+    return str(p)
 
 
 class SignalDecision(TypedDict):
@@ -81,6 +138,8 @@ def compute_signal(tech: dict) -> SignalDecision:
     rs_high = bool(tech.get("rs_high"))
     ema_up = _ema_stack_up(tech)
     golden = _golden(tech)
+    news = tech.get("news_sentiment")  # VADER compound -1..1, None when unavailable
+    news = None if news is None else _f(tech, "news_sentiment")
 
     bull: list[str] = []
     bear: list[str] = []
@@ -110,6 +169,13 @@ def compute_signal(tech: dict) -> SignalDecision:
         bear.append("rsi_overbought")
     elif rsi <= _RSI_WEAK:
         bear.append("rsi_weak")
+    if news is not None:
+        if news >= _NEWS_POSITIVE:
+            bull.append("news_positive")
+            reasons.append(f"news sentiment positive ({news:+.2f})")
+        elif news <= _NEWS_NEGATIVE:
+            bear.append("news_negative")
+            reasons.append(f"news sentiment negative ({news:+.2f})")
 
     # --- Decide ---------------------------------------------------------
     if buy_signal or (rs_high and above_sma_50 and ema_up is True):
@@ -120,6 +186,26 @@ def compute_signal(tech: dict) -> SignalDecision:
         signal = "BUY" if (rs_high or ema_up is True) else "HOLD"
     else:
         signal = "HOLD"
+
+    # --- Learned gate: weight the bull case by tuned condition weights ----
+    # script_tuner lowers a condition's weight when trades entered on it kept
+    # losing; a BUY whose (weighted) evidence falls below min_buy_score is
+    # downgraded to HOLD. With default params this never fires.
+    params = load_params()
+    weights = params["condition_weights"]
+    if signal == "BUY":
+        buy_score = sum(float(weights.get(c, 1.0)) for c in bull)
+        if buy_score < float(params["min_buy_score"]):
+            signal = "HOLD"
+            reasons.append(
+                f"BUY downgraded to HOLD by learned rules "
+                f"(weighted score {buy_score:.2f} < {params['min_buy_score']:.2f})"
+            )
+
+    # --- News veto: strong negative headlines block a fresh BUY ----------
+    if signal == "BUY" and news is not None and news <= _NEWS_VETO:
+        signal = "HOLD"
+        reasons.append(f"BUY vetoed by strongly negative news ({news:+.2f})")
 
     # --- Confidence: how many of the distinct condition slots agree -----
     # Slots: buy_signal, rs_high, above_sma_50, ema_stack, golden_cross, rsi.

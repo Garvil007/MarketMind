@@ -191,19 +191,39 @@ State persists in the same SQLite db (`data/marketmind.db`), new tables:
 `paper_trades` (ISO-8601 UTC timestamps). Surfaced as the **Claude Trader** tab in
 `app/streamlit_app.py`; headless via `scripts/run_paper_trader.py` (`make paper`).
 
-**Learning loop (retrain from own trades).** The script logic is fixed, but the
-ADVISORY ml_model improves from realized P&L. On BUY, the entry `tech` features are
-stored on the position; on SELL, `_record_outcome` writes the entry features +
-realized return + a label (`BUY` if ≥ `OUTCOME_UP_THRESH` +5%, `SELL` if ≤
-`OUTCOME_DOWN_THRESH` −5%, else `HOLD`) to new table `paper_trade_outcomes`.
-`retrain_from_trades` rebuilds those into a feature/label frame (`build_outcomes_df`,
-columns = ml `FEATURE_COLUMNS` + label) and MERGES them with the historical
-`data/training/dataset.csv` before calling `ml_model.train` — so each retrain folds
-the agent's newest mistakes into the model. Needs ≥`min_outcomes` (10) closed trades.
-Run via `make retrain-from-trades` / `scripts/retrain_from_trades.py`, or the
-"Retrain ML from trades" button in the Claude Trader tab. Outcomes survive
-`reset_paper` (training history kept). The deterministic script signal is unchanged —
-only the ML second opinion learns.
+**Learning loop (retrain from own trades).** BOTH learners update from realized
+P&L. On BUY, the entry `tech` features are stored on the position; on SELL,
+`_record_outcome` writes the entry features + realized return + a label (`BUY` if ≥
+`OUTCOME_UP_THRESH` +5%, `SELL` if ≤ `OUTCOME_DOWN_THRESH` −5%, else `HOLD`) to
+table `paper_trade_outcomes`. `retrain_from_trades` then does two things:
+1. **ML** — rebuilds outcomes into a feature/label frame (`build_outcomes_df`,
+   columns = ml `FEATURE_COLUMNS` + label) and MERGES them with the historical
+   `data/training/dataset.csv` before calling `ml_model.train`.
+2. **Script** — `script_tuner.tune_from_trades` replays each closed trade's entry
+   features through `compute_signal`, computes per-bull-condition win rates, and
+   writes `data/models/script_params.json`: condition weights
+   `clamp(win_rate/0.5, 0.25, 1.25)` (n ≥ 5 per condition) + a `min_buy_score`
+   gate (2.0 if overall win rate < 45%, 1.5 if < 55%, else 1.0). `compute_signal`
+   loads these params on every call: a BUY whose weighted bull score falls under
+   the gate is downgraded to HOLD. Missing/default params = untuned behavior, so
+   the fixed-script baseline is preserved on fresh checkouts. Tuning is
+   recomputed from scratch each run (idempotent, bounded — dampens, never disables).
+
+Needs ≥`min_outcomes` (10) decisive closed trades. Run via
+`make retrain-from-trades` / `scripts/retrain_from_trades.py`, or the "Retrain ML
+from trades" button in the Claude Trader tab. Outcomes survive `reset_paper`.
+
+**News sentiment (live feature).** `paper_trader.evaluate` calls
+`news_sentiment.ticker_sentiment` (offline: yfinance headlines + VADER, degrades
+to neutral 0.0 on failure) and merges `news_sentiment` (compound −1..1) +
+`news_count` into the tech dict. It feeds three places: (a) `compute_signal` —
+`news_positive` bull / `news_negative` bear condition at ±0.2, and a hard BUY→HOLD
+veto at ≤ −0.3; (b) the ML feature vector — `news_sentiment` is in
+`FEATURE_COLUMNS` (historical rows backfilled 0.0-neutral at train time; live
+closed trades carry the real entry value, so the retrained model learns its
+effect); (c) the stored entry features for the learning loop. Old model
+artifacts with the 19-feature schema return None from `predict_from_tech`
+(advisory skipped) until retrained.
 
 ## Build Order (next, not yet done)
 

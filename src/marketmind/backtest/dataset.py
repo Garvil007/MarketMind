@@ -22,11 +22,16 @@ from marketmind import quant_signal
 from marketmind.backtest.features import build_features, fetch_history, row_to_tech
 
 # Columns fed to the scikit-learn model (order matters — ml_model relies on it).
+# news_sentiment (VADER compound at entry) is only observable live — historical
+# rows don't have it, so ml_model.train backfills missing columns with 0.0
+# (neutral). The model still learns its effect from the paper trader's own
+# closed trades, whose entry features carry the real value.
 FEATURE_COLUMNS = [
     "rsi_14", "sma_50", "sma_200", "ema_10", "ema_20", "ema_50",
     "pct_from_sma_50", "plus_di", "weekly_rsi", "rs_value",
     "above_sma_50", "rs_high",
     "cond1", "cond2", "cond3", "cond4", "cond5", "cond6", "buy_signal",
+    "news_sentiment",
 ]
 LABELS = ["SELL", "HOLD", "BUY"]
 
@@ -57,9 +62,10 @@ def label_features(
     if df.empty:
         return df
     df["label"] = df["fwd_ret"].apply(lambda r: _label(float(r), up, down))
-    # Booleans -> ints for the tabular model.
+    # Booleans -> ints for the tabular model. Columns absent from historical
+    # feature tables (e.g. news_sentiment) are backfilled at train time.
     for c in FEATURE_COLUMNS:
-        if df[c].dtype == bool:
+        if c in df.columns and df[c].dtype == bool:
             df[c] = df[c].astype(int)
     return df
 
